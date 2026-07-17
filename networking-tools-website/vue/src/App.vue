@@ -9,7 +9,8 @@ import { RouterLink, RouterView } from 'vue-router'
     <RouterLink to="/portchecker">Port Checker</RouterLink>
     <RouterLink to="/ipscanner">IP Scanner</RouterLink>
     <RouterLink to="/sslcheck">SSL Checker</RouterLink>
-    <RouterLink class="wirehamsi-link" to="/wirehamsi">wirehamsi</RouterLink>
+    <RouterLink to="/wirehamsi">wirehamsi</RouterLink>
+    <RouterLink to="/packet-sender">Packet Sender</RouterLink>
   </nav>
 
   <RouterView />

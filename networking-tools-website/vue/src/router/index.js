@@ -5,6 +5,7 @@ import PortCheckerPage from '../pages/PortCheckerPage.vue'
 import IPScannerPage from '../pages/IPScannerPage.vue'
 import SSLCheckPage from '@/pages/SSLCheckPage.vue'
 import CapturePage from '@/pages/CapturePage.vue'
+import CrafterPage from '@/pages/CrafterPage.vue'
 
 
 const routes = [
@@ -14,7 +15,7 @@ const routes = [
   { path: '/ipscanner', component: IPScannerPage},
   { path: '/sslcheck', component: SSLCheckPage},
   { path: '/wirehamsi', component: CapturePage },
-  
+  { path: '/packet-sender', component: CrafterPage },
 ]
 
 const router = createRouter({

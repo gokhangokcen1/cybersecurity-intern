@@ -30,4 +30,10 @@ func SetupRoutes(app *fiber.App) {
 		return captureUpgrader.Upgrade(c.RequestCtx(), handlers.CaptureWebSocketHandler)
 	})
 
+	api.Post("/packet-sender", handlers.PortCraftHandler)
+
+	app.Get("/api/devices", handlers.ListDevicesHandler)
+	app.Post("/api/capture/start", handlers.StartCaptureHandler)
+	app.Post("/api/capture/stop", handlers.StopCaptureHandler)
+
 }
