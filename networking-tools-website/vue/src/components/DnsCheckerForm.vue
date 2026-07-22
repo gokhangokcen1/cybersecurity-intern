@@ -1,221 +1,72 @@
-<script setup>
-import { ref } from 'vue'
-import DnsCheckerService from '../services/DnsCheckerService'
-
-const domain = ref('')
-const sonuc = ref(null)
-const hataMesaji = ref('')
-const yukleniyor = ref(false)
-
-async function kontrolEt() {
-  hataMesaji.value = ''
-  sonuc.value = null
-  yukleniyor.value = true
-
-  try {
-    const response = await DnsCheckerService.kontrolEt(domain.value)
-    sonuc.value = response.data
-  } catch (error) {
-    if (error.response && error.response.data && error.response.data.error) {
-      hataMesaji.value = error.response.data.error
-    } else {
-      hataMesaji.value = 'Kontrol basarisiz, backend calisiyor mu kontrol et'
-    }
-  } finally {
-    yukleniyor.value = false
-  }
-}
-</script>
-
 <template>
-  <div class="container">
-    <h1>DNS Checker</h1>
-
-    <form @submit.prevent="kontrolEt">
-      <input v-model="domain" placeholder="Ornek: google.com" />
-      <button type="submit" :disabled="!domain || yukleniyor">
-        {{ yukleniyor ? 'Kontrol Ediliyor...' : 'Kontrol Et' }}
-      </button>
-    </form>
-
-    <p v-if="hataMesaji" class="hata">{{ hataMesaji }}</p>
-
-    <div v-if="sonuc" class="sonuc">
-
-      <!-- A -->
-      <h2>A</h2>
-      <table>
-        <tbody>
-          <tr v-if="!sonuc.a || !sonuc.a.length"><td>Bulunamadi</td></tr>
-          <tr v-for="(ip, i) in sonuc.a" :key="i"><td>{{ ip }}</td></tr>
-        </tbody>
-      </table>
-
-      <!-- AAAA -->
-      <h2>AAAA</h2>
-      <table>
-        <tbody>
-          <tr v-if="!sonuc.aaaa || !sonuc.aaaa.length"><td>Bulunamadi</td></tr>
-          <tr v-for="(ip, i) in sonuc.aaaa" :key="i"><td>{{ ip }}</td></tr>
-        </tbody>
-      </table>
-
-      <!-- CNAME -->
-      <h2>CNAME</h2>
-      <table>
-        <tbody>
-          <tr><td>{{ sonuc.cname || 'Bulunamadi' }}</td></tr>
-        </tbody>
-      </table>
-
-      <!-- MX -->
-      <h2>MX</h2>
-      <table>
-        <thead><tr><th>Oncelik</th><th>Host</th></tr></thead>
-        <tbody>
-          <tr v-if="!sonuc.mx || !sonuc.mx.length"><td colspan="2">Bulunamadi</td></tr>
-          <tr v-for="(mx, i) in sonuc.mx" :key="i">
-            <td>{{ mx.preference }}</td>
-            <td>{{ mx.host }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- NS -->
-      <h2>NS</h2>
-      <table>
-        <tbody>
-          <tr v-if="!sonuc.ns || !sonuc.ns.length"><td>Bulunamadi</td></tr>
-          <tr v-for="(ns, i) in sonuc.ns" :key="i"><td>{{ ns }}</td></tr>
-        </tbody>
-      </table>
-
-      <!-- PTR -->
-      <h2>PTR</h2>
-      <table>
-        <tbody>
-          <tr v-if="!sonuc.ptr || !sonuc.ptr.length"><td>Bulunamadi</td></tr>
-          <tr v-for="(ptr, i) in sonuc.ptr" :key="i"><td>{{ ptr }}</td></tr>
-        </tbody>
-      </table>
-
-      <!-- SRV -->
-      <h2>SRV</h2>
-      <table>
-        <thead><tr><th>Oncelik</th><th>Agirlik</th><th>Port</th><th>Hedef</th></tr></thead>
-        <tbody>
-          <tr v-if="!sonuc.srv || !sonuc.srv.length"><td colspan="4">Bulunamadi</td></tr>
-          <tr v-for="(srv, i) in sonuc.srv" :key="i">
-            <td>{{ srv.priority }}</td>
-            <td>{{ srv.weight }}</td>
-            <td>{{ srv.port }}</td>
-            <td>{{ srv.target }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- SOA -->
-      <h2>SOA</h2>
-      <table>
-        <tbody v-if="sonuc.soa">
-          <tr><td>NS</td><td>{{ sonuc.soa.ns }}</td></tr>
-          <tr><td>Mbox</td><td>{{ sonuc.soa.mbox }}</td></tr>
-          <tr><td>Serial</td><td>{{ sonuc.soa.serial }}</td></tr>
-          <tr><td>Refresh</td><td>{{ sonuc.soa.refresh }}</td></tr>
-          <tr><td>Retry</td><td>{{ sonuc.soa.retry }}</td></tr>
-          <tr><td>Expire</td><td>{{ sonuc.soa.expire }}</td></tr>
-          <tr><td>Minimum</td><td>{{ sonuc.soa.minimum }}</td></tr>
-        </tbody>
-        <tbody v-else><tr><td>Bulunamadi</td></tr></tbody>
-      </table>
-
-      <!-- TXT -->
-      <h2>TXT</h2>
-      <table>
-        <tbody>
-          <tr v-if="!sonuc.txt || !sonuc.txt.length"><td>Bulunamadi</td></tr>
-          <tr v-for="(txt, i) in sonuc.txt" :key="i"><td>{{ txt }}</td></tr>
-        </tbody>
-      </table>
-
-      <!-- CAA -->
-      <h2>CAA</h2>
-      <table>
-        <thead><tr><th>Flag</th><th>Tag</th><th>Value</th></tr></thead>
-        <tbody>
-          <tr v-if="!sonuc.caa || !sonuc.caa.length"><td colspan="3">Bulunamadi</td></tr>
-          <tr v-for="(caa, i) in sonuc.caa" :key="i">
-            <td>{{ caa.flag }}</td>
-            <td>{{ caa.tag }}</td>
-            <td>{{ caa.value }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- DS -->
-      <h2>DS</h2>
-      <table>
-        <thead><tr><th>Key Tag</th><th>Algorithm</th><th>Digest Type</th><th>Digest</th></tr></thead>
-        <tbody>
-          <tr v-if="!sonuc.ds || !sonuc.ds.length"><td colspan="4">Bulunamadi</td></tr>
-          <tr v-for="(ds, i) in sonuc.ds" :key="i">
-            <td>{{ ds.keyTag }}</td>
-            <td>{{ ds.algorithm }}</td>
-            <td>{{ ds.digestType }}</td>
-            <td class="mono">{{ ds.digest }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <!-- DNSKEY -->
-      <h2>DNSKEY</h2>
-      <table>
-        <thead><tr><th>Flags</th><th>Protocol</th><th>Algorithm</th><th>Public Key</th></tr></thead>
-        <tbody>
-          <tr v-if="!sonuc.dnskey || !sonuc.dnskey.length"><td colspan="4">Bulunamadi</td></tr>
-          <tr v-for="(key, i) in sonuc.dnskey" :key="i">
-            <td>{{ key.flags }}</td>
-            <td>{{ key.protocol }}</td>
-            <td>{{ key.algorithm }}</td>
-            <td class="mono">{{ key.publicKey }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-    </div>
-  </div>
+  <div ref="mapContainer" class="dns-map"></div>
 </template>
 
+<script setup>
+import { ref, onMounted, watch } from 'vue';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+const props = defineProps({
+  results: { type: Array, default: () => [] },
+});
+
+const mapContainer = ref(null);
+let map = null;
+let markers = [];
+
+function clearMarkers() {
+  markers.forEach((m) => map.removeLayer(m));
+  markers = [];
+}
+
+function renderMarkers(results) {
+  if (!map) return;
+  clearMarkers();
+
+  results.forEach((item) => {
+    if (!item.lat && !item.lon) return;
+
+    const isSuccess = item.resolved;
+    const color = isSuccess ? '#22c55e' : '#ef4444';
+
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="
+        background:${color};
+        width:14px; height:14px; border-radius:50%;
+        border:2px solid white; box-shadow:0 0 3px rgba(0,0,0,0.4);
+      "></div>`,
+      iconSize: [14, 14],
+    });
+
+    const marker = L.marker([item.lat, item.lon], { icon }).addTo(map);
+
+    const answers = item.records?.length ? item.records : item.ips;
+    const answersText = answers?.length ? answers.join(', ') : 'Cevap yok';
+
+    marker.bindPopup(`
+      <b>${item.city || 'Bilinmiyor'}, ${item.country || ''}</b><br>
+      <b>IP:</b> ${item.ip}<br>
+      <b>Tip:</b> ${item.type || 'A'}<br>
+      <b>Sonuç:</b> ${isSuccess ? '✅ Başarılı' : '❌ Yanıtsız'}<br>
+      <b>Cevap:</b> ${answersText}
+    `);
+    markers.push(marker);
+  });
+}
+
+onMounted(() => {
+  map = L.map(mapContainer.value).setView([20, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap',
+  }).addTo(map);
+  renderMarkers(props.results);
+});
+
+watch(() => props.results, (newResults) => renderMarkers(newResults));
+</script>
+
 <style scoped>
-.container {
-  max-width: 700px;
-  margin: 40px auto 40px 20%;
-  font-family: sans-serif;
-}
-form {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-input, button {
-  padding: 8px;
-}
-.hata {
-  color: red;
-}
-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 20px;
-}
-td, th {
-  border: 1px solid #ccc;
-  padding: 8px;
-  text-align: left;
-  word-break: break-all;
-}
-.mono {
-  font-family: monospace;
-  font-size: 0.8rem;
-}
+.dns-map { height: 500px; width: 1400px; border-radius: 8px; overflow: hidden; margin-left: 100px; }
 </style>
