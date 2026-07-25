@@ -19,3 +19,5 @@
     - Alan adı kayıt, kayıt firması ve iletişim bilgilerini gösterir.
   - **SMTP Mail Sender**
     - 25 portunu kullanarak LAN içerisindeki bir mail sunucusu aracılığı ile mail gönderme.   
+  - <a href="github.com/gokhangokcen1/AI-Website-Classifier">**Website Kategorizasyon**</a>
+    - AI ile Internet sitesi kategorizasyonu ve sınıflandırması 
