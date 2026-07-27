@@ -1,0 +1,7 @@
+node_modules/
+.cache/
+port-multi-scanner.exe
+backend.exe
+backend/port-multi-scanner.exe
+data/
+.logs/

@@ -1,0 +1,82 @@
+{
+  "devices": [
+    {
+      "device_name": "A Server",
+      "customer_name": "Müşteri 1",
+      "dealer_name": "Bayi 1",
+      "ip_addresses": ["88.225.227.23", "88.225.233.211"]
+    },
+    {
+      "device_name": "B Server",
+      "customer_name": "Müşteri 2",
+      "dealer_name": "Bayi 1",
+      "ip_addresses": ["85.97.191.83"]
+    },
+    {
+      "device_name": "C Server",
+      "customer_name": "Müşteri 3",
+      "dealer_name": "Bayi 1",
+      "ip_addresses": ["161.9.213.65"]
+    },
+    {
+      "device_name": "D Server",
+      "customer_name": "Müşteri 4",
+      "dealer_name": "Bayi 1",
+      "ip_addresses": ["193.42.101.43"]
+    },
+    {
+      "device_name": "E Server",
+      "customer_name": "Müşteri 5",
+      "dealer_name": "Bayi 2",
+      "ip_addresses": ["88.255.159.218"]
+    },
+    {
+      "device_name": "F Server",
+      "customer_name": "Müşteri 6",
+      "dealer_name": "Bayi 2",
+      "ip_addresses": ["212.156.29.2"]
+    },
+    {
+      "device_name": "G Server",
+      "customer_name": "Müşteri 7",
+      "dealer_name": "Bayi 2",
+      "ip_addresses": ["88.248.105.247"]
+    },
+    {
+      "device_name": "H Server",
+      "customer_name": "Müşteri 8",
+      "dealer_name": "Bayi 2",
+      "ip_addresses": ["195.175.200.230"]
+    },
+    {
+      "device_name": "I Server",
+      "customer_name": "Müşteri 9",
+      "dealer_name": "Bayi 2",
+      "ip_addresses": ["95.3.43.90"]
+    },
+    {
+      "device_name": "J Server",
+      "customer_name": "Müşteri 10",
+      "dealer_name": "Bayi 3",
+      "ip_addresses": ["85.109.182.33"]
+    },
+    {
+      "device_name": "K Server",
+      "customer_name": "Müşteri 11",
+      "dealer_name": "Bayi 3",
+      "ip_addresses": ["78.187.14.19"]
+    },
+    {
+      "device_name": "L Server",
+      "customer_name": "Müşteri 12",
+      "dealer_name": "Bayi 3",
+      "ip_addresses": ["195.175.63.74"]
+    },
+    {
+      "device_name": "M Server",
+      "customer_name": "Müşteri 13",
+      "dealer_name": "Bayi 3",
+      "ip_addresses": ["85.98.40.132"]
+    }
+  ]
+}
