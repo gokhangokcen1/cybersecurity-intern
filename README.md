@@ -21,5 +21,5 @@
     - 25 portunu kullanarak LAN içerisindeki bir mail sunucusu aracılığı ile mail gönderme.   
   - <a href="https://github.com/gokhangokcen1/AI-Website-Classifier">**Website Kategorizasyon**</a>
     - AI ile Internet sitesi kategorizasyonu ve sınıflandırması
-  - **Port Checker v2**
+  - **Port Checkerv2**
     - IP listesindeki cihazların tüm portlarını ya da seçili portlarını tarar.
