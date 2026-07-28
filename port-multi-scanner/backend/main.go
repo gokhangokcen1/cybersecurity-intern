@@ -40,7 +40,10 @@ type ScanJob struct {
 }
 type BatchJob struct {
 	ScanJob
-	done *sync.WaitGroup
+	done      *sync.WaitGroup
+	confirm   bool
+	retryJobs *[]ScanJob
+	retryMu   *sync.Mutex
 }
 type ScanRequest struct {
 	StartPort     int   `json:"startPort"`
@@ -352,46 +355,75 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		workerCount = totalJobs
 	}
 	queue := make(chan BatchJob, workerCount)
+	fastTimeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	confirmTimeout := fastTimeout * 4
+	if confirmTimeout < time.Second {
+		confirmTimeout = time.Second
+	}
+	record := func(job ScanJob, open bool) {
+		m.mu.Lock()
+		m.status.CurrentPort = job.Port
+		m.status.Completed++
+		completed, total := m.status.Completed, m.status.Total
+		if open {
+			r := OpenPort{Source: m.name, IP: job.Target.IP, DeviceName: job.Target.DeviceName, CustomerName: job.Target.CustomerName, DealerName: job.Target.DealerName, Port: job.Port, FoundAt: time.Now()}
+			m.results = append(m.results, r)
+			m.status.OpenCount++
+			m.mu.Unlock()
+			m.emit(ScanEvent{Type: "result", Port: job.Port, Completed: completed, Total: total, Result: &r})
+		} else {
+			m.mu.Unlock()
+		}
+		m.emit(ScanEvent{Type: "progress", Port: job.Port, Completed: completed, Total: total})
+	}
 	var workers sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for job := range queue {
-				open := checkReliable(ctx, job.Target.IP, job.Port, time.Duration(req.TimeoutMS)*time.Millisecond)
-				m.mu.Lock()
-				m.status.CurrentPort = job.Port
-				m.status.Completed++
-				completed, total := m.status.Completed, m.status.Total
-				if open {
-					r := OpenPort{Source: m.name, IP: job.Target.IP, DeviceName: job.Target.DeviceName, CustomerName: job.Target.CustomerName, DealerName: job.Target.DealerName, Port: job.Port, FoundAt: time.Now()}
-					m.results = append(m.results, r)
-					m.status.OpenCount++
-					m.mu.Unlock()
-					m.emit(ScanEvent{Type: "result", Port: job.Port, Completed: completed, Total: total, Result: &r})
+				if job.confirm {
+					record(job.ScanJob, check(ctx, job.Target.IP, job.Port, confirmTimeout))
 				} else {
-					m.mu.Unlock()
+					open, timedOut := checkFast(ctx, job.Target.IP, job.Port, fastTimeout)
+					if timedOut {
+						job.retryMu.Lock()
+						*job.retryJobs = append(*job.retryJobs, job.ScanJob)
+						job.retryMu.Unlock()
+					} else {
+						record(job.ScanJob, open)
+					}
 				}
-				m.emit(ScanEvent{Type: "progress", Port: job.Port, Completed: completed, Total: total})
 				job.done.Done()
 			}
 		}()
 	}
 	defer func() { close(queue); workers.Wait() }()
 	runBatch := func(batch []ScanJob) bool {
-		var completed sync.WaitGroup
-		for _, scanJob := range batch {
-			completed.Add(1)
-			select {
-			case queue <- BatchJob{ScanJob: scanJob, done: &completed}:
-			case <-ctx.Done():
-				completed.Done()
-				completed.Wait()
-				return false
+		dispatch := func(jobs []ScanJob, confirm bool, retries *[]ScanJob, retriesMu *sync.Mutex) bool {
+			var completed sync.WaitGroup
+			for _, scanJob := range jobs {
+				completed.Add(1)
+				select {
+				case queue <- BatchJob{ScanJob: scanJob, done: &completed, confirm: confirm, retryJobs: retries, retryMu: retriesMu}:
+				case <-ctx.Done():
+					completed.Done()
+					completed.Wait()
+					return false
+				}
 			}
+			completed.Wait()
+			return ctx.Err() == nil
 		}
-		completed.Wait()
-		return ctx.Err() == nil
+		var retries []ScanJob
+		var retriesMu sync.Mutex
+		if !dispatch(batch, false, &retries, &retriesMu) {
+			return false
+		}
+		if len(retries) == 0 {
+			return true
+		}
+		return dispatch(retries, true, nil, nil)
 	}
 	for firstPort := 0; firstPort < len(req.Ports); firstPort += req.PortsPerBatch {
 		lastPort := firstPort + req.PortsPerBatch
@@ -410,30 +442,23 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		}
 	}
 }
-func checkReliable(ctx context.Context, ip string, port int, timeout time.Duration) bool {
+func checkFast(ctx context.Context, ip string, port int, timeout time.Duration) (bool, bool) {
 	d := net.Dialer{Timeout: timeout}
 	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
 	if err == nil {
 		c.Close()
-		return true
+		return true, false
 	}
 	var networkError net.Error
-	if !errors.As(err, &networkError) || !networkError.Timeout() || ctx.Err() != nil {
+	return false, errors.As(err, &networkError) && networkError.Timeout() && ctx.Err() == nil
+}
+func check(ctx context.Context, ip string, port int, timeout time.Duration) bool {
+	c, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
+	if err != nil {
 		return false
 	}
-	// Yalnizca zaman asimina ugrayan baglantilar ikinci kez denenir. Reddedilen
-	// portlar hemen kapali kabul edilir; bu da hizdan odun vermeden yanlis
-	// negatif olasiligini azaltir.
-	retryTimeout := timeout * 4
-	if retryTimeout < time.Second {
-		retryTimeout = time.Second
-	}
-	c, err = (&net.Dialer{Timeout: retryTimeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
-	if err == nil {
-		c.Close()
-		return true
-	}
-	return false
+	c.Close()
+	return true
 }
 func (m *Manager) stop() {
 	m.mu.RLock()

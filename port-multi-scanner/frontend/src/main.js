@@ -1,13 +1,14 @@
 import { createApp } from 'vue/dist/vue.esm-bundler.js'
 import './style.css'
 
-const commonPorts = [20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 5900, 8080, 8443]
+// Nmap nmap-services verisindeki en yuksek frekansli 100 TCP port.
+const commonPorts = [80, 23, 443, 21, 22, 25, 3389, 110, 445, 139, 143, 53, 135, 3306, 8080, 1723, 111, 995, 993, 5900, 1025, 587, 8888, 199, 1720, 465, 548, 113, 81, 6001, 10000, 514, 5060, 179, 1026, 2000, 8443, 8000, 32768, 554, 26, 1433, 49152, 2001, 515, 8008, 49154, 1027, 5666, 646, 5000, 5631, 631, 49153, 8081, 2049, 88, 79, 5800, 106, 2121, 1110, 49155, 6000, 513, 990, 5357, 427, 49156, 543, 544, 5101, 144, 7, 389, 8009, 3128, 444, 9999, 5009, 7070, 5190, 3000, 5432, 1900, 3986, 13, 1029, 9, 5051, 6646, 49157, 1028, 873, 1755, 2717, 4899, 9100, 119, 37]
 
 createApp({
   data: () => ({
     devices: [], results: [], status: {}, error: '', notice: '', loading: true,
     mode: 'common', portsText: commonPorts.join(', '), startPort: 1, endPort: 1024, timeoutMs: 250, workers: 4000,
-    newDevice: '', newCustomer: '', newDealer: '', newIP: '', refreshTimer: null
+    newDevice: '', newCustomer: '', newDealer: '', newIP: '', refreshTimer: null, elapsedTimer: null, elapsedSeconds: 0
   }),
   computed: {
     running () { return !!this.status.running },
@@ -16,6 +17,14 @@ createApp({
     selectedPorts () { return this.mode === 'all' ? 65535 : this.mode === 'range' ? Math.max(0, this.endPort - this.startPort + 1) : this.ports.length },
     totalChecks () { return this.selectedPorts * this.targetCount },
     progress () { return this.status.total ? Math.round(this.status.completed * 100 / this.status.total) : 0 },
+    durationSeconds () {
+      if (this.status.startedAt && this.status.finishedAt) return Math.max(0, Math.floor((new Date(this.status.finishedAt).getTime() - new Date(this.status.startedAt).getTime()) / 1000))
+      return this.elapsedSeconds
+    },
+    elapsedLabel () {
+      const hours = Math.floor(this.durationSeconds / 3600); const minutes = Math.floor((this.durationSeconds % 3600) / 60); const seconds = this.durationSeconds % 60
+      return [hours, minutes, seconds].map(value => String(value).padStart(2, '0')).join(':')
+    },
     groupedResults () {
       const groups = {}
       this.results.forEach(result => {
@@ -33,6 +42,7 @@ createApp({
         if (!feedResponse.ok || !dashboardResponse.ok) throw new Error('Backend yanit vermedi.')
         const feed = await feedResponse.json(); const dashboard = await dashboardResponse.json()
         this.devices = feed.devices || []; this.results = dashboard.results || []; this.status = (dashboard.statuses || [])[0] || {}
+        if (this.status.running) this.startElapsedTimer(); else this.stopElapsedTimer()
         this.error = ''
       } catch (error) { this.error = 'Backend calismiyor. Backend icin: go run ./backend' }
       finally { this.loading = false }
@@ -41,8 +51,8 @@ createApp({
       const events = new EventSource('/api/events')
       events.addEventListener('result', event => { const item = JSON.parse(event.data).result; if (item) this.results.unshift(item) })
       events.addEventListener('progress', event => { const data = JSON.parse(event.data); this.status = { ...this.status, running: true, completed: data.completed, total: data.total, currentPort: data.port } })
-      events.addEventListener('finished', () => { this.status.running = false; this.stopLiveRefresh(); this.refresh() })
-      events.addEventListener('cancelled', () => { this.status.running = false; this.stopLiveRefresh(); this.refresh() })
+      events.addEventListener('finished', () => { this.status.running = false; this.stopLiveRefresh(); this.stopElapsedTimer(); this.refresh() })
+      events.addEventListener('cancelled', () => { this.status.running = false; this.stopLiveRefresh(); this.stopElapsedTimer(); this.refresh() })
     },
     startLiveRefresh () {
       this.stopLiveRefresh()
@@ -54,6 +64,21 @@ createApp({
     stopLiveRefresh () {
       if (this.refreshTimer) window.clearInterval(this.refreshTimer)
       this.refreshTimer = null
+    },
+    updateElapsed () {
+      if (!this.status.startedAt) return
+      this.elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(this.status.startedAt).getTime()) / 1000))
+    },
+    formatTimestamp (timestamp) {
+      return timestamp ? new Date(timestamp).toLocaleString('tr-TR') : '—'
+    },
+    startElapsedTimer () {
+      this.updateElapsed()
+      if (!this.elapsedTimer) this.elapsedTimer = window.setInterval(() => this.updateElapsed(), 1000)
+    },
+    stopElapsedTimer () {
+      if (this.elapsedTimer) window.clearInterval(this.elapsedTimer)
+      this.elapsedTimer = null
     },
     addIP () {
       const ip = this.newIP.trim(); const deviceName = this.newDevice.trim() || 'Yeni cihaz'
@@ -88,11 +113,13 @@ createApp({
       const data = await response.json()
       if (!response.ok) { this.error = data.error || 'Tarama baslatilamadi.'; return }
       this.results = []
-      this.status = { ...this.status, running: true, completed: 0, total: this.totalChecks }
+      this.status = { ...this.status, running: true, completed: 0, total: this.totalChecks, startedAt: new Date().toISOString() }
+      this.elapsedSeconds = 0
+      this.startElapsedTimer()
       this.startLiveRefresh()
       await this.refresh()
     },
-    async stopScan () { await fetch('/api/scan', { method: 'DELETE' }); this.stopLiveRefresh(); await this.refresh() }
+    async stopScan () { await fetch('/api/scan', { method: 'DELETE' }); this.stopLiveRefresh(); this.stopElapsedTimer(); await this.refresh() }
   },
   template: `
   <main class="shell">
@@ -110,10 +137,10 @@ createApp({
         <label class="radio"><input v-model="mode" type="radio" value="all"><b>Tum portlar</b><small>1 – 65535</small></label>
         <label class="radio"><input v-model="mode" type="radio" value="custom"><b>Belirli portlar</b><small>Virgulle ayirin</small></label><input v-if="mode === 'custom'" v-model="portsText" class="input" placeholder="22, 80, 443">
         <div class="scan-settings"><label>Baglanti zaman asimi (ms)<input v-model.number="timeoutMs" min="25" max="30000" type="number"></label><label>Eszamanli goroutine<input v-model.number="workers" min="1" max="5000" type="number"></label></div>
-        <p class="batch-note">Batch boyutu goroutine ve hedef IP sayisindan otomatik hesaplanir. Batch bitince sonraki port grubuna gecilir.</p>
+        <p class="batch-note">Her batch iki asamada calisir: hizli ilk kontrol, sonra yalnizca timeout alanlar icin dogrulama. Batch bitince sonraki port grubuna gecilir.</p>
         <button class="primary" :disabled="running" @click="startScan">Portlari tara · {{ totalChecks.toLocaleString('tr-TR') }} istek</button><button v-if="running" class="stop" @click="stopScan">Taramayi durdur</button>
       </article>
-      <article class="card progress"><div class="title"><span>03</span><h2>Tarama durumu</h2><em>{{ running ? 'Devam ediyor' : 'Hazir' }}</em></div><strong>%{{ progress }}</strong><div class="bar"><i :style="{ width: progress + '%' }"></i></div><p>Port {{ status.currentPort || '—' }} · {{ status.completed || 0 }} / {{ status.total || 0 }} istek</p><small>{{ status.workerLimit || workers }} goroutine · Batch: {{ status.portsPerBatch || Math.max(1, Math.floor(workers / Math.max(targetCount, 1))) }} port × {{ targetCount }} IP</small></article>
+      <article class="card progress"><div class="title"><span>03</span><h2>Tarama durumu</h2><em>{{ running ? 'Devam ediyor' : 'Hazir' }}</em></div><strong>%{{ progress }}</strong><div class="bar"><i :style="{ width: progress + '%' }"></i></div><p>Toplam sure: <b>{{ elapsedLabel }}</b></p><p>Baslangic: {{ formatTimestamp(status.startedAt) }}<br>Bitis: {{ formatTimestamp(status.finishedAt) }}</p><p>Port {{ status.currentPort || '—' }} · {{ status.completed || 0 }} / {{ status.total || 0 }} istek</p><small>{{ status.workerLimit || workers }} goroutine · Batch: {{ status.portsPerBatch || Math.max(1, Math.floor(workers / Math.max(targetCount, 1))) }} port × {{ targetCount }} IP</small></article>
     </section>
     <section class="card results"><div class="title"><span>04</span><h2>Acik portlar</h2><em>{{ results.length }} bulgu</em></div><div v-if="!groupedResults.length" class="empty">Tarama sonuclari burada gorunecek.</div><div class="result-grid"><article v-for="item in groupedResults" :key="item.ip" class="result-item"><code>{{ item.ip }}</code><b>{{ item.device || 'Cihaz bilgisi yok' }}</b><small>{{ item.customer || '—' }}</small><div class="port-tags"><span v-for="port in item.ports" :key="port">{{ port }}</span></div></article></div></section>
   </main>`
