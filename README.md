@@ -22,4 +22,4 @@
   - <a href="https://github.com/gokhangokcen1/AI-Website-Classifier">**Website Kategorizasyon**</a>
     - AI ile Internet sitesi kategorizasyonu ve sınıflandırması
   - **Port Checkerv2**
-    - IP listesindeki cihazların tüm portlarını ya da seçili portlarını tarar.
+    - IP listesindeki cihazların tüm portlarını ya da seçili portlarını tarar, tarama bittiğinde sonucu mail olarak gönderir.
