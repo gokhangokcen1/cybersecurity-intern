@@ -135,7 +135,7 @@ createApp({
         <label class="radio"><input v-model="mode" type="radio" value="common"><b>Yaygin portlar</b><small>{{ ports.length }} servis portu</small></label>
         <label class="radio"><input v-model="mode" type="radio" value="range"><b>Port araligi</b><small>Baslangic ve bitisi secin</small></label><div v-if="mode === 'range'" class="range"><input v-model.number="startPort" min="1" max="65535" type="number"><span>—</span><input v-model.number="endPort" min="1" max="65535" type="number"></div>
         <label class="radio"><input v-model="mode" type="radio" value="all"><b>Tum portlar</b><small>1 – 65535</small></label>
-        <label class="radio"><input v-model="mode" type="radio" value="custom"><b>Belirli portlar</b><small>Virgulle ayirin</small></label><input v-if="mode === 'custom'" v-model="portsText" class="input" placeholder="22, 80, 443">
+        <label class="radio"><input v-model="mode" type="radio" value="custom"><b>Belirli portlar</b><small>Virgülle ayırın</small></label><input v-if="mode === 'custom'" v-model="portsText" class="input" placeholder="22, 80, 443">
         <div class="scan-settings"><label>Baglanti zaman asimi (ms)<input v-model.number="timeoutMs" min="25" max="30000" type="number"></label><label>Eszamanli goroutine<input v-model.number="workers" min="1" max="5000" type="number"></label></div>
         <p class="batch-note">Her batch iki asamada calisir: hizli ilk kontrol, sonra yalnizca timeout alanlar icin dogrulama. Batch bitince sonraki port grubuna gecilir.</p>
         <button class="primary" :disabled="running" @click="startScan">Portlari tara · {{ totalChecks.toLocaleString('tr-TR') }} istek</button><button v-if="running" class="stop" @click="stopScan">Taramayi durdur</button>
