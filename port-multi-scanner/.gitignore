@@ -5,3 +5,5 @@ backend.exe
 backend/port-multi-scanner.exe
 data/
 .logs/
+
+.env

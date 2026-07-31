@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -46,12 +47,13 @@ type BatchJob struct {
 	retryMu   *sync.Mutex
 }
 type ScanRequest struct {
-	StartPort     int   `json:"startPort"`
-	EndPort       int   `json:"endPort"`
-	Ports         []int `json:"ports"`
-	TimeoutMS     int   `json:"timeoutMs"`
-	Workers       int   `json:"workers"`
-	PortsPerBatch int   `json:"portsPerBatch"`
+	StartPort     int    `json:"startPort"`
+	EndPort       int    `json:"endPort"`
+	Ports         []int  `json:"ports"`
+	TimeoutMS     int    `json:"timeoutMs"`
+	Workers       int    `json:"workers"`
+	PortsPerBatch int    `json:"portsPerBatch"`
+	Mode          string `json:"mode"`
 }
 type OpenPort struct {
 	Source       string    `json:"source"`
@@ -71,20 +73,28 @@ type ScanEvent struct {
 	Message   string    `json:"message,omitempty"`
 }
 type ScanStatus struct {
-	ScannerName   string     `json:"scannerName"`
-	Running       bool       `json:"running"`
-	CurrentPort   int        `json:"currentPort"`
-	Completed     int        `json:"completed"`
-	Total         int        `json:"total"`
-	OpenCount     int        `json:"openCount"`
-	WorkerLimit   int        `json:"workerLimit,omitempty"`
-	PortsPerBatch int        `json:"portsPerBatch,omitempty"`
-	StartedAt     *time.Time `json:"startedAt,omitempty"`
-	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	ScannerName    string     `json:"scannerName"`
+	Running        bool       `json:"running"`
+	CurrentPort    int        `json:"currentPort"`
+	Completed      int        `json:"completed"`
+	Total          int        `json:"total"`
+	OpenCount      int        `json:"openCount"`
+	WorkerLimit    int        `json:"workerLimit,omitempty"`
+	PortsPerBatch  int        `json:"portsPerBatch,omitempty"`
+	StartedAt      *time.Time `json:"startedAt,omitempty"`
+	FinishedAt     *time.Time `json:"finishedAt,omitempty"`
+	Error          string     `json:"error,omitempty"`
+	Mode           string     `json:"mode,omitempty"`
+	ClosedCount    int        `json:"closedCount"`
+	UncertainCount int        `json:"uncertainCount"`
+	TimeoutCount   int        `json:"timeoutCount"`
+	ResponseCount  int        `json:"responseCount"`
 }
 type EmailRequest struct {
 	Recipients string `json:"recipients"`
+}
+type SMTPTestRequest struct {
+	Recipient string `json:"recipient"`
 }
 type ScanPayload struct {
 	Status  ScanStatus `json:"status"`
@@ -294,6 +304,20 @@ func (m *Manager) start(req ScanRequest) error {
 	if req.Workers == 0 {
 		req.Workers = 4000
 	}
+	req.Mode = strings.ToLower(strings.TrimSpace(req.Mode))
+	if req.Mode == "" {
+		req.Mode = "normal"
+	}
+	if req.Mode != "normal" && req.Mode != "fast" {
+		return errors.New("ge?ersiz tarama modu")
+	}
+	if req.Mode == "fast" {
+		req.TimeoutMS = 140
+		req.Workers = 5000
+		if req.PortsPerBatch == 0 {
+			req.PortsPerBatch = 400
+		}
+	}
 	unique := make(map[int]struct{}, len(req.Ports))
 	ports := make([]int, 0, len(req.Ports))
 	for _, port := range req.Ports {
@@ -333,45 +357,55 @@ func (m *Manager) start(req ScanRequest) error {
 	now := time.Now()
 	m.cancel = cancel
 	m.results = nil
-	m.status = ScanStatus{ScannerName: m.name, Running: true, CurrentPort: req.Ports[0], Total: len(req.Ports) * len(m.targets), WorkerLimit: req.Workers, PortsPerBatch: req.PortsPerBatch, StartedAt: &now}
+	m.status = ScanStatus{ScannerName: m.name, Running: true, CurrentPort: req.Ports[0], Total: len(req.Ports) * len(m.targets), WorkerLimit: req.Workers, PortsPerBatch: req.PortsPerBatch, Mode: req.Mode, StartedAt: &now}
 	targets := append([]Target(nil), m.targets...)
 	m.mu.Unlock()
 	go m.run(ctx, req, targets)
 	return nil
 }
 func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
-	defer func() {
-		m.mu.Lock()
-		m.status.Running = false
-		m.cancel = nil
-		now := time.Now()
-		m.status.FinishedAt = &now
-		m.mu.Unlock()
-		m.persistResults()
-		m.emit(ScanEvent{Type: "finished"})
-	}()
-	workerCount := req.Workers
-	if totalJobs := len(req.Ports) * len(targets); workerCount > totalJobs {
-		workerCount = totalJobs
+	defer m.finishScan()
+	workerCount := minInt(req.Workers, len(req.Ports)*len(targets))
+	if workerCount < 1 {
+		return
+	}
+	perIPLimit := minInt(96, maxInt(4, req.Workers/maxInt(1, len(targets))))
+	if req.Mode == "fast" {
+		perIPLimit = minInt(192, perIPLimit)
+	}
+	limits := make(map[string]chan struct{}, len(targets))
+	for _, target := range targets {
+		if _, ok := limits[target.IP]; !ok {
+			limits[target.IP] = make(chan struct{}, perIPLimit)
+		}
 	}
 	queue := make(chan BatchJob, workerCount)
 	fastTimeout := time.Duration(req.TimeoutMS) * time.Millisecond
-	confirmTimeout := fastTimeout * 4
-	if confirmTimeout < time.Second {
-		confirmTimeout = time.Second
+	if req.Mode == "fast" {
+		fastTimeout = 140 * time.Millisecond
 	}
-	record := func(job ScanJob, open bool) {
+	confirmTimeout := maxDuration(time.Second, fastTimeout*4)
+	if req.Mode == "fast" {
+		confirmTimeout = 450 * time.Millisecond
+	}
+	record := func(job ScanJob, outcome string) {
 		m.mu.Lock()
-		m.status.CurrentPort = job.Port
-		m.status.Completed++
+		m.status.CurrentPort, m.status.Completed = job.Port, m.status.Completed+1
+		m.status.ResponseCount++
 		completed, total := m.status.Completed, m.status.Total
-		if open {
+		if outcome == "open" {
 			r := OpenPort{Source: m.name, IP: job.Target.IP, DeviceName: job.Target.DeviceName, CustomerName: job.Target.CustomerName, DealerName: job.Target.DealerName, Port: job.Port, FoundAt: time.Now()}
 			m.results = append(m.results, r)
 			m.status.OpenCount++
 			m.mu.Unlock()
 			m.emit(ScanEvent{Type: "result", Port: job.Port, Completed: completed, Total: total, Result: &r})
 		} else {
+			if outcome == "uncertain" {
+				m.status.UncertainCount++
+				m.status.TimeoutCount++
+			} else {
+				m.status.ClosedCount++
+			}
 			m.mu.Unlock()
 		}
 		m.emit(ScanEvent{Type: "progress", Port: job.Port, Completed: completed, Total: total})
@@ -382,84 +416,106 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		go func() {
 			defer workers.Done()
 			for job := range queue {
+				limit := limits[job.Target.IP]
+				select {
+				case limit <- struct{}{}:
+				case <-ctx.Done():
+					job.done.Done()
+					continue
+				}
 				if job.confirm {
-					record(job.ScanJob, check(ctx, job.Target.IP, job.Port, confirmTimeout))
+					record(job.ScanJob, dialOutcome(ctx, job.Target.IP, job.Port, confirmTimeout, true))
 				} else {
-					open, timedOut := checkFast(ctx, job.Target.IP, job.Port, fastTimeout)
-					if timedOut {
+					outcome := dialOutcome(ctx, job.Target.IP, job.Port, fastTimeout, false)
+					if outcome == "uncertain" {
 						job.retryMu.Lock()
 						*job.retryJobs = append(*job.retryJobs, job.ScanJob)
 						job.retryMu.Unlock()
 					} else {
-						record(job.ScanJob, open)
+						record(job.ScanJob, outcome)
 					}
 				}
+				<-limit
 				job.done.Done()
 			}
 		}()
 	}
 	defer func() { close(queue); workers.Wait() }()
-	runBatch := func(batch []ScanJob) bool {
-		dispatch := func(jobs []ScanJob, confirm bool, retries *[]ScanJob, retriesMu *sync.Mutex) bool {
-			var completed sync.WaitGroup
-			for _, scanJob := range jobs {
-				completed.Add(1)
-				select {
-				case queue <- BatchJob{ScanJob: scanJob, done: &completed, confirm: confirm, retryJobs: retries, retryMu: retriesMu}:
-				case <-ctx.Done():
-					completed.Done()
-					completed.Wait()
-					return false
-				}
+	dispatch := func(jobs []ScanJob, confirm bool, retries *[]ScanJob, retriesMu *sync.Mutex) bool {
+		var done sync.WaitGroup
+		for _, scanJob := range jobs {
+			done.Add(1)
+			select {
+			case queue <- BatchJob{ScanJob: scanJob, done: &done, confirm: confirm, retryJobs: retries, retryMu: retriesMu}:
+			case <-ctx.Done():
+				done.Done()
+				done.Wait()
+				return false
 			}
-			completed.Wait()
-			return ctx.Err() == nil
 		}
-		var retries []ScanJob
-		var retriesMu sync.Mutex
-		if !dispatch(batch, false, &retries, &retriesMu) {
-			return false
-		}
-		if len(retries) == 0 {
-			return true
-		}
-		return dispatch(retries, true, nil, nil)
+		done.Wait()
+		return ctx.Err() == nil
 	}
-	for firstPort := 0; firstPort < len(req.Ports); firstPort += req.PortsPerBatch {
-		lastPort := firstPort + req.PortsPerBatch
-		if lastPort > len(req.Ports) {
-			lastPort = len(req.Ports)
-		}
-		jobs := make([]ScanJob, 0, (lastPort-firstPort)*len(targets))
-		for _, port := range req.Ports[firstPort:lastPort] {
+	for first := 0; first < len(req.Ports); first += req.PortsPerBatch {
+		last := minInt(len(req.Ports), first+req.PortsPerBatch)
+		jobs := make([]ScanJob, 0, (last-first)*len(targets))
+		for _, port := range req.Ports[first:last] {
 			for _, target := range targets {
 				jobs = append(jobs, ScanJob{Target: target, Port: port})
 			}
 		}
-		if !runBatch(jobs) {
+		var retries []ScanJob
+		var retriesMu sync.Mutex
+		if !dispatch(jobs, false, &retries, &retriesMu) || (len(retries) > 0 && !dispatch(retries, true, nil, nil)) {
 			m.emit(ScanEvent{Type: "cancelled", Message: "Tarama durduruldu"})
 			return
 		}
 	}
 }
-func checkFast(ctx context.Context, ip string, port int, timeout time.Duration) (bool, bool) {
-	d := net.Dialer{Timeout: timeout}
-	c, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
-	if err == nil {
-		c.Close()
-		return true, false
-	}
-	var networkError net.Error
-	return false, errors.As(err, &networkError) && networkError.Timeout() && ctx.Err() == nil
+func (m *Manager) finishScan() {
+	m.mu.Lock()
+	m.status.Running = false
+	m.cancel = nil
+	now := time.Now()
+	m.status.FinishedAt = &now
+	m.mu.Unlock()
+	m.persistResults()
+	m.emit(ScanEvent{Type: "finished"})
 }
-func check(ctx context.Context, ip string, port int, timeout time.Duration) bool {
+func dialOutcome(ctx context.Context, ip string, port int, timeout time.Duration, confirmed bool) string {
 	c, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(port)))
-	if err != nil {
-		return false
+	if err == nil {
+		_ = c.Close()
+		return "open"
 	}
-	c.Close()
-	return true
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() && ctx.Err() == nil {
+		if confirmed {
+			return "uncertain"
+		}
+		return "uncertain"
+	}
+	return "closed"
 }
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func maxDuration(a, b time.Duration) time.Duration {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (m *Manager) stop() {
 	m.mu.RLock()
 	cancel := m.cancel
@@ -469,27 +525,64 @@ func (m *Manager) stop() {
 	}
 }
 
-func (m *Manager) emailReport(recipients string, results []OpenPort) error {
-	host, user, password, from := os.Getenv("SMTP_HOST"), os.Getenv("SMTP_USERNAME"), os.Getenv("SMTP_PASSWORD"), os.Getenv("SMTP_FROM")
-	if host == "" || user == "" || password == "" || from == "" {
-		return errors.New("SMTP ayarlari eksik: SMTP_HOST, SMTP_USERNAME, SMTP_PASSWORD ve SMTP_FROM tanimlanmali")
-	}
-	port := os.Getenv("SMTP_PORT")
-	if port == "" {
-		port = "587"
-	}
+func parseRecipients(recipients string) ([]string, error) {
 	var to []string
 	for _, address := range strings.Split(recipients, ",") {
 		address = strings.TrimSpace(address)
-		if address != "" {
-			if _, err := mail.ParseAddress(address); err != nil {
-				return fmt.Errorf("gecersiz alici e-posta adresi: %s", address)
-			}
-			to = append(to, address)
+		if address == "" {
+			continue
 		}
+		if _, err := mail.ParseAddress(address); err != nil {
+			return nil, fmt.Errorf("ge\u00e7ersiz al\u0131c\u0131 e-posta adresi: %s", address)
+		}
+		to = append(to, address)
 	}
 	if len(to) == 0 {
-		return errors.New("en az bir alici e-posta adresi girin")
+		return nil, errors.New("en az bir al\u0131c\u0131 e-posta adresi girin")
+	}
+	return to, nil
+}
+
+func smtpMessage(from string, to []string, subject, body string) []byte {
+	return []byte("From: " + from + "\r\nTo: " + strings.Join(to, ", ") + "\r\nSubject: " + mime.QEncoding.Encode("UTF-8", subject) + "\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n" + body)
+}
+
+func sendSMTPReport(to []string, subject, body string) error {
+	from := strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	if from == "" {
+		from = "gokhangokcenn@gmail.com"
+	}
+	message := smtpMessage(from, to, subject, body)
+	internalHost := strings.TrimSpace(os.Getenv("INTERNAL_SMTP_HOST"))
+	if internalHost == "" {
+		internalHost = "172.16.0.6"
+	}
+	internalPort := strings.TrimSpace(os.Getenv("INTERNAL_SMTP_PORT"))
+	if internalPort == "" {
+		internalPort = "25"
+	}
+	if err := smtp.SendMail(net.JoinHostPort(internalHost, internalPort), nil, from, to, message); err == nil {
+		return nil
+	} else {
+		gmailUser := strings.TrimSpace(os.Getenv("GMAIL_SMTP_USERNAME"))
+		if gmailUser == "" {
+			gmailUser = from
+		}
+		gmailPassword := strings.ReplaceAll(strings.TrimSpace(os.Getenv("GMAIL_SMTP_APP_PASSWORD")), " ", "")
+		if gmailPassword == "" {
+			return fmt.Errorf("dahili SMTP ba\u015far\u0131s\u0131z: %v; Gmail yede\u011fi i\u00e7in GMAIL_SMTP_APP_PASSWORD tan\u0131ml\u0131 de\u011fil", err)
+		}
+		if gmailErr := smtp.SendMail("smtp.gmail.com:587", smtp.PlainAuth("", gmailUser, gmailPassword, "smtp.gmail.com"), from, to, message); gmailErr != nil {
+			return fmt.Errorf("dahili SMTP ba\u015far\u0131s\u0131z: %v; Gmail yede\u011fi ba\u015far\u0131s\u0131z: %w", err, gmailErr)
+		}
+		return nil
+	}
+}
+
+func (m *Manager) emailReport(recipients string, results []OpenPort) error {
+	to, err := parseRecipients(recipients)
+	if err != nil {
+		return err
 	}
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].IP == results[j].IP {
@@ -498,21 +591,38 @@ func (m *Manager) emailReport(recipients string, results []OpenPort) error {
 		return results[i].IP < results[j].IP
 	})
 	var body strings.Builder
-	body.WriteString("Port Multi Scanner - Acik Port Raporu\n\n")
-	body.WriteString(fmt.Sprintf("Toplam acik port: %d\n\n", len(results)))
-	if len(results) == 0 {
-		body.WriteString("Bu taramada acik TCP port bulunamadi.\n")
-	} else {
-		body.WriteString("Tarama noktasi | Musteri | Bayi | Cihaz | IP | Port | Tespit zamani\n")
-		body.WriteString(strings.Repeat("-", 125) + "\n")
-		for _, r := range results {
-			body.WriteString(fmt.Sprintf("%s | %s | %s | %s | %s | %d | %s\n", r.Source, r.CustomerName, r.DealerName, r.DeviceName, r.IP, r.Port, r.FoundAt.Format(time.RFC3339)))
+	body.WriteString("Port Multi Scanner\nA\u00e7\u0131k Port Raporu\n\n")
+	body.WriteString(fmt.Sprintf("Toplam a\u00e7\u0131k port: %d\n\n", len(results)))
+	for i := 0; i < len(results); {
+		r := results[i]
+		var ports []string
+		j := i
+		for j < len(results) && results[j].IP == r.IP {
+			ports = append(ports, strconv.Itoa(results[j].Port))
+			j++
 		}
+		body.WriteString(fmt.Sprintf("IP: %s\nSunucu: %s\nM\u00fc\u015fteri: %s\nBayi: %s\nA\u00e7\u0131k portlar (%d): %s\n\n", r.IP, emptyLabel(r.DeviceName), emptyLabel(r.CustomerName), emptyLabel(r.DealerName), len(ports), strings.Join(ports, ", ")))
+		i = j
 	}
-	message := "From: " + from + "\r\nTo: " + strings.Join(to, ", ") + "\r\nSubject: Port Multi Scanner - Acik Port Raporu\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n" + body.String()
-	return smtp.SendMail(net.JoinHostPort(host, port), smtp.PlainAuth("", user, password, host), from, to, []byte(message))
+	if len(results) == 0 {
+		body.WriteString("Bu taramada a\u00e7\u0131k TCP port bulunamad\u0131.\n")
+	}
+	return sendSMTPReport(to, "Port Multi Scanner - A\u00e7\u0131k Port Raporu", body.String())
 }
 
+func emptyLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "\u2014"
+	}
+	return value
+}
+func (m *Manager) smtpTest(recipient string) error {
+	to, err := parseRecipients(recipient)
+	if err != nil {
+		return err
+	}
+	return sendSMTPReport(to, "Port Multi Scanner - SMTP Testi", "SMTP ayarlar\u0131 do\u011fruland\u0131.\n")
+}
 func loadFeed(path string) (Feed, error) {
 	b, e := os.ReadFile(path)
 	if e != nil {
@@ -532,7 +642,28 @@ func projectFile(name string) string {
 	return name
 }
 
+func loadDotEnv(path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		pair := strings.SplitN(line, "=", 2)
+		if len(pair) != 2 {
+			continue
+		}
+		key, value := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+		if key != "" && os.Getenv(key) == "" {
+			_ = os.Setenv(key, value)
+		}
+	}
+}
 func main() {
+	loadDotEnv(projectFile(".env"))
 	feed, err := loadFeed(projectFile("ip_feed.json"))
 	if err != nil {
 		panic(fmt.Sprintf("ip_feed.json okunamadi: %v", err))
@@ -564,7 +695,7 @@ func main() {
 	api.Put("/feed", func(c *fiber.Ctx) error {
 		var feed Feed
 		if err := c.BodyParser(&feed); err != nil {
-			return fiber.NewError(400, "JSON gecersiz")
+			return fiber.NewError(400, "JSON ge\u00e7ersiz")
 		}
 		if err := manager.updateFeed(feed); err != nil {
 			return fiber.NewError(409, err.Error())
@@ -586,7 +717,7 @@ func main() {
 	api.Post("/scan", func(c *fiber.Ctx) error {
 		var r ScanRequest
 		if e := c.BodyParser(&r); e != nil {
-			return fiber.NewError(400, "JSON gecersiz")
+			return fiber.NewError(400, "JSON ge\u00e7ersiz")
 		}
 		if e := manager.start(r); e != nil {
 			return fiber.NewError(409, e.Error())
@@ -602,7 +733,7 @@ func main() {
 		}
 		var request ScanRequest
 		if err := c.BodyParser(&request); err != nil {
-			return fiber.NewError(400, "JSON gecersiz")
+			return fiber.NewError(400, "JSON ge\u00e7ersiz")
 		}
 		if err := manager.start(request); err != nil {
 			return fiber.NewError(409, err.Error())
@@ -623,10 +754,20 @@ func main() {
 		}
 		return c.SendStatus(204)
 	})
+	api.Post("/smtp-test", func(c *fiber.Ctx) error {
+		var request SMTPTestRequest
+		if err := c.BodyParser(&request); err != nil {
+			return fiber.NewError(400, "JSON ge\u00e7ersiz")
+		}
+		if err := manager.smtpTest(request.Recipient); err != nil {
+			return fiber.NewError(400, err.Error())
+		}
+		return c.JSON(fiber.Map{"message": "SMTP test e-postas\u0131 g\u00f6nderildi"})
+	})
 	api.Post("/email-report", func(c *fiber.Ctx) error {
 		var request EmailRequest
 		if err := c.BodyParser(&request); err != nil {
-			return fiber.NewError(400, "JSON gecersiz")
+			return fiber.NewError(400, "JSON ge\u00e7ersiz")
 		}
 		if err := manager.emailReport(request.Recipients, dashboard(manager, remote).Results); err != nil {
 			return fiber.NewError(400, err.Error())

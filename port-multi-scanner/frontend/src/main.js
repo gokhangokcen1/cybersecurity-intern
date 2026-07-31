@@ -7,8 +7,8 @@ const commonPorts = [80, 23, 443, 21, 22, 25, 3389, 110, 445, 139, 143, 53, 135,
 createApp({
   data: () => ({
     devices: [], results: [], status: {}, error: '', notice: '', loading: true,
-    mode: 'common', portsText: commonPorts.join(', '), startPort: 1, endPort: 1024, timeoutMs: 250, workers: 4000,
-    newDevice: '', newCustomer: '', newDealer: '', newIP: '', refreshTimer: null, elapsedTimer: null, elapsedSeconds: 0
+    mode: 'common', scanMode: 'normal', portsText: commonPorts.join(', '), startPort: 1, endPort: 1024, timeoutMs: 250, workers: 4000,
+    newDevice: '', newCustomer: '', newDealer: '', newIP: '', refreshTimer: null, elapsedTimer: null, elapsedSeconds: 0, recipients: '', emailOnFinish: false, emailStatus: 'idle', emailMessage: ''
   }),
   computed: {
     running () { return !!this.status.running },
@@ -43,7 +43,8 @@ createApp({
         const feed = await feedResponse.json(); const dashboard = await dashboardResponse.json()
         this.devices = feed.devices || []; this.results = dashboard.results || []; this.status = (dashboard.statuses || [])[0] || {}
         if (this.status.running) this.startElapsedTimer(); else this.stopElapsedTimer()
-        this.error = ''
+        this.error = this.status.error || ''
+        this.maybeSendEmail()
       } catch (error) { this.error = 'Backend calismiyor. Backend icin: go run ./backend' }
       finally { this.loading = false }
     },
@@ -51,7 +52,8 @@ createApp({
       const events = new EventSource('/api/events')
       events.addEventListener('result', event => { const item = JSON.parse(event.data).result; if (item) this.results.unshift(item) })
       events.addEventListener('progress', event => { const data = JSON.parse(event.data); this.status = { ...this.status, running: true, completed: data.completed, total: data.total, currentPort: data.port } })
-      events.addEventListener('finished', () => { this.status.running = false; this.stopLiveRefresh(); this.stopElapsedTimer(); this.refresh() })
+      events.addEventListener('finished', async () => { this.status.running = false; this.stopLiveRefresh(); this.stopElapsedTimer(); await this.refresh(); this.maybeSendEmail() })
+      events.addEventListener('scan_error', event => { const data = JSON.parse(event.data); this.error = data.message || 'Tarama başlatılamadı.' })
       events.addEventListener('cancelled', () => { this.status.running = false; this.stopLiveRefresh(); this.stopElapsedTimer(); this.refresh() })
     },
     startLiveRefresh () {
@@ -101,7 +103,7 @@ createApp({
       this.notice = data.message
     },
     scanRequest () {
-      const base = { timeoutMs: Number(this.timeoutMs), workers: Number(this.workers) }
+      const base = this.scanMode === 'fast' ? { mode: 'fast' } : { timeoutMs: Number(this.timeoutMs), workers: Number(this.workers), mode: 'normal' }
       if (this.mode === 'all') return { ...base, startPort: 1, endPort: 65535 }
       if (this.mode === 'range') return { ...base, startPort: Number(this.startPort), endPort: Number(this.endPort) }
       return { ...base, ports: this.ports }
@@ -109,17 +111,21 @@ createApp({
     async startScan () {
       this.error = ''; this.notice = ''
       if (!this.targetCount || !this.selectedPorts) { this.error = 'En az bir IP ve port secin.'; return }
+      if (this.emailOnFinish && !this.recipients.trim()) { this.error = 'Otomatik rapor için e-posta adresi girin.'; return }
+      this.emailStatus = this.emailOnFinish ? 'waiting' : 'idle'; this.emailMessage = this.emailOnFinish ? 'Tarama tamamlandığında rapor otomatik gönderilecek.' : ''
       const response = await fetch('/api/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(this.scanRequest()) })
       const data = await response.json()
       if (!response.ok) { this.error = data.error || 'Tarama baslatilamadi.'; return }
       this.results = []
-      this.status = { ...this.status, running: true, completed: 0, total: this.totalChecks, startedAt: new Date().toISOString() }
+      this.status = { ...this.status, running: true, completed: 0, total: this.totalChecks, startedAt: new Date().toISOString(), finishedAt: null, error: '' }
       this.elapsedSeconds = 0
       this.startElapsedTimer()
       this.startLiveRefresh()
       await this.refresh()
     },
-    async stopScan () { await fetch('/api/scan', { method: 'DELETE' }); this.stopLiveRefresh(); this.stopElapsedTimer(); await this.refresh() }
+    async stopScan () { await fetch('/api/scan', { method: 'DELETE' }); this.stopLiveRefresh(); this.stopElapsedTimer(); await this.refresh() },
+    maybeSendEmail () { if (this.emailStatus === 'waiting' && !this.running && !this.status.error && this.status.finishedAt && this.emailOnFinish && this.recipients.trim()) this.sendEmail() },
+    async sendEmail () { if (!this.recipients.trim()) { this.emailStatus = 'failed'; this.emailMessage = 'E-posta adresi girilmedi.'; return }; this.emailStatus = 'sending'; this.emailMessage = 'E-posta raporu gönderiliyor…'; try { const response = await fetch('/api/email-report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipients: this.recipients.trim() }) }); const data = await response.json(); if (!response.ok) { this.emailStatus = 'failed'; this.emailMessage = data.error || 'E-posta gönderilemedi.'; return }; this.emailStatus = 'sent'; this.emailMessage = 'E-posta raporu gönderildi.' } catch (_) { this.emailStatus = 'failed'; this.emailMessage = 'E-posta sunucusuna ulaşılamadı.' } },
   },
   template: `
   <main class="shell">
@@ -131,16 +137,15 @@ createApp({
         <div class="device" v-for="(device, deviceIndex) in devices" :key="device.device_name"><b>{{ device.device_name }}</b><small>{{ device.customer_name || 'Musteri yok' }} · {{ device.dealer_name || 'Bayi yok' }}</small><div class="ip-row" v-for="(ip, ipIndex) in device.ip_addresses" :key="ip"><code>{{ ip }}</code><button class="remove" :disabled="running" @click="removeIP(deviceIndex, ipIndex)">Kaldir</button></div></div>
         <form class="add-ip" @submit.prevent="addIP"><input v-model="newDevice" placeholder="Cihaz adi (opsiyonel)"><input v-model="newIP" placeholder="IP adresi" required><input v-model="newCustomer" placeholder="Musteri (opsiyonel)"><input v-model="newDealer" placeholder="Bayi (opsiyonel)"><button :disabled="running">IP ekle</button></form>
       </article>
-      <article class="card controls"><div class="title"><span>02</span><h2>Port tarama</h2><em>{{ selectedPorts }} port</em></div>
-        <label class="radio"><input v-model="mode" type="radio" value="common"><b>Yaygin portlar</b><small>{{ ports.length }} servis portu</small></label>
+      <article class="card controls"><div class="title"><span>02</span><h2>Port tarama</h2><em>{{ selectedPorts }} port</em></div><div class="scan-mode"><label :class="{ selected: scanMode === 'normal' }"><input v-model="scanMode" type="radio" value="normal"><b>Normal mod</b><small>Ayarlanabilir, tam TCP doğrulaması</small></label><label :class="{ selected: scanMode === 'fast' }"><input v-model="scanMode" type="radio" value="fast"><b>Hızlı mod</b><small>Otomatik ayarlı paralel TCP kontrolü</small></label></div><label class="radio"><input v-model="mode" type="radio" value="common"><b>Yaygin portlar</b><small>{{ ports.length }} servis portu</small></label>
         <label class="radio"><input v-model="mode" type="radio" value="range"><b>Port araligi</b><small>Baslangic ve bitisi secin</small></label><div v-if="mode === 'range'" class="range"><input v-model.number="startPort" min="1" max="65535" type="number"><span>—</span><input v-model.number="endPort" min="1" max="65535" type="number"></div>
         <label class="radio"><input v-model="mode" type="radio" value="all"><b>Tum portlar</b><small>1 – 65535</small></label>
         <label class="radio"><input v-model="mode" type="radio" value="custom"><b>Belirli portlar</b><small>Virgülle ayırın</small></label><input v-if="mode === 'custom'" v-model="portsText" class="input" placeholder="22, 80, 443">
-        <div class="scan-settings"><label>Baglanti zaman asimi (ms)<input v-model.number="timeoutMs" min="25" max="30000" type="number"></label><label>Eszamanli goroutine<input v-model.number="workers" min="1" max="5000" type="number"></label></div>
-        <p class="batch-note">Her batch iki asamada calisir: hizli ilk kontrol, sonra yalnizca timeout alanlar icin dogrulama. Batch bitince sonraki port grubuna gecilir.</p>
-        <button class="primary" :disabled="running" @click="startScan">Portlari tara · {{ totalChecks.toLocaleString('tr-TR') }} istek</button><button v-if="running" class="stop" @click="stopScan">Taramayi durdur</button>
+        <div v-if="scanMode === 'normal'" class="scan-settings"><label>Bağlantı zaman aşımı<small>milisaniye</small><input class="setting-input" v-model.number="timeoutMs" min="25" max="30000" type="number"></label><label>Eş zamanlı goroutine<small>bağlantı limiti</small><input class="setting-input" v-model.number="workers" min="1" max="5000" type="number"></label></div>
+        
+        <div class="control-divider"></div><label class="radio"><input v-model="emailOnFinish" type="checkbox"><b>Sonuçları e-posta yoluyla almak istiyorum</b><small>Tarama bittiğinde rapor otomatik gönderilir</small></label><label v-if="emailOnFinish" class="timeout">Alıcı e-posta adresi<input v-model.trim="recipients" type="email" placeholder="rapor@firma.com"></label><button class="primary" :disabled="running" @click="startScan">Portlari tara · {{ totalChecks.toLocaleString('tr-TR') }} istek</button><button v-if="running" class="stop" @click="stopScan">Taramayi durdur</button>
       </article>
-      <article class="card progress"><div class="title"><span>03</span><h2>Tarama durumu</h2><em>{{ running ? 'Devam ediyor' : 'Hazir' }}</em></div><strong>%{{ progress }}</strong><div class="bar"><i :style="{ width: progress + '%' }"></i></div><p>Toplam sure: <b>{{ elapsedLabel }}</b></p><p>Baslangic: {{ formatTimestamp(status.startedAt) }}<br>Bitis: {{ formatTimestamp(status.finishedAt) }}</p><p>Port {{ status.currentPort || '—' }} · {{ status.completed || 0 }} / {{ status.total || 0 }} istek</p><small>{{ status.workerLimit || workers }} goroutine · Batch: {{ status.portsPerBatch || Math.max(1, Math.floor(workers / Math.max(targetCount, 1))) }} port × {{ targetCount }} IP</small></article>
+      <article class="card progress"><div class="title"><span>03</span><h2>Tarama durumu</h2><em>{{ running ? 'Devam ediyor' : 'Hazir' }}</em></div><strong>%{{ progress }}</strong><div class="bar"><i :style="{ width: progress + '%' }"></i></div><p>Toplam sure: <b>{{ elapsedLabel }}</b></p><p>Baslangic: {{ formatTimestamp(status.startedAt) }}<br>Bitis: {{ formatTimestamp(status.finishedAt) }}</p><p>Port {{ status.currentPort || '—' }} · {{ status.completed || 0 }} / {{ status.total || 0 }} istek</p><small>{{ status.workerLimit || workers }} goroutine · Batch: {{ status.portsPerBatch || Math.max(1, Math.floor(workers / Math.max(targetCount, 1))) }} port × {{ targetCount }} IP</small><div v-if="emailOnFinish || emailStatus !== 'idle'" class="email-delivery"><b>E-posta raporu</b><p :class="['email-status', emailStatus]">{{ emailStatus === 'waiting' ? 'Tarama tamamlandığında rapor otomatik gönderilecek.' : (emailMessage || 'E-posta raporu beklemede.') }}</p><button v-if="emailStatus === 'failed' && !running" class="retry-email" @click="sendEmail">Mevcut sonuçları tekrar gönder</button></div></article>
     </section>
     <section class="card results"><div class="title"><span>04</span><h2>Acik portlar</h2><em>{{ results.length }} bulgu</em></div><div v-if="!groupedResults.length" class="empty">Tarama sonuclari burada gorunecek.</div><div class="result-grid"><article v-for="item in groupedResults" :key="item.ip" class="result-item"><code>{{ item.ip }}</code><b>{{ item.device || 'Cihaz bilgisi yok' }}</b><small>{{ item.customer || '—' }}</small><div class="port-tags"><span v-for="port in item.ports" :key="port">{{ port }}</span></div></article></div></section>
   </main>`
