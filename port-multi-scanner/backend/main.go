@@ -410,6 +410,24 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		}
 		m.emit(ScanEvent{Type: "progress", Port: job.Port, Completed: completed, Total: total})
 	}
+	resolveUncertain := func(job ScanJob, outcome string) {
+		m.mu.Lock()
+		m.status.CurrentPort = job.Port
+		if m.status.UncertainCount > 0 {
+			m.status.UncertainCount--
+		}
+		if outcome == "open" {
+			r := OpenPort{Source: m.name, IP: job.Target.IP, DeviceName: job.Target.DeviceName, CustomerName: job.Target.CustomerName, DealerName: job.Target.DealerName, Port: job.Port, FoundAt: time.Now()}
+			m.results = append(m.results, r)
+			m.status.OpenCount++
+			completed, total := m.status.Completed, m.status.Total
+			m.mu.Unlock()
+			m.emit(ScanEvent{Type: "result", Port: job.Port, Completed: completed, Total: total, Result: &r})
+			return
+		}
+		m.status.ClosedCount++
+		m.mu.Unlock()
+	}
 	var workers sync.WaitGroup
 	for i := 0; i < workerCount; i++ {
 		workers.Add(1)
@@ -424,10 +442,17 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 					continue
 				}
 				if job.confirm {
-					record(job.ScanJob, dialOutcome(ctx, job.Target.IP, job.Port, confirmTimeout, true))
+					if req.Mode == "fast" {
+						resolveUncertain(job.ScanJob, dialOutcome(ctx, job.Target.IP, job.Port, confirmTimeout, true))
+					} else {
+						record(job.ScanJob, dialOutcome(ctx, job.Target.IP, job.Port, confirmTimeout, true))
+					}
 				} else {
 					outcome := dialOutcome(ctx, job.Target.IP, job.Port, fastTimeout, false)
 					if outcome == "uncertain" {
+						if req.Mode == "fast" {
+							record(job.ScanJob, "uncertain")
+						}
 						job.retryMu.Lock()
 						*job.retryJobs = append(*job.retryJobs, job.ScanJob)
 						job.retryMu.Unlock()
@@ -456,6 +481,7 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		done.Wait()
 		return ctx.Err() == nil
 	}
+	var deferredRetries []ScanJob
 	for first := 0; first < len(req.Ports); first += req.PortsPerBatch {
 		last := minInt(len(req.Ports), first+req.PortsPerBatch)
 		jobs := make([]ScanJob, 0, (last-first)*len(targets))
@@ -466,10 +492,19 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		}
 		var retries []ScanJob
 		var retriesMu sync.Mutex
-		if !dispatch(jobs, false, &retries, &retriesMu) || (len(retries) > 0 && !dispatch(retries, true, nil, nil)) {
+		if !dispatch(jobs, false, &retries, &retriesMu) {
 			m.emit(ScanEvent{Type: "cancelled", Message: "Tarama durduruldu"})
 			return
 		}
+		if req.Mode == "fast" {
+			deferredRetries = append(deferredRetries, retries...)
+		} else if len(retries) > 0 && !dispatch(retries, true, nil, nil) {
+			m.emit(ScanEvent{Type: "cancelled", Message: "Tarama durduruldu"})
+			return
+		}
+	}
+	if req.Mode == "fast" && len(deferredRetries) > 0 {
+		_ = dispatch(deferredRetries, true, nil, nil)
 	}
 }
 func (m *Manager) finishScan() {
