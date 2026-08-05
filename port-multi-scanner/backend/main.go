@@ -346,7 +346,7 @@ func (m *Manager) start(req ScanRequest) error {
 	portsPerBatch := req.PortsPerBatch
 	if portsPerBatch == 0 {
 		// Batch, worker limitini asmamalidir. Aksi halde sondaki birkac is
-		// ikinci dalgaya kalir ve batch suresi gereksiz yere ikiye katlanir.
+		// ikinci dalgaya kalir ve batch süresi gereksiz yere ikiye katlanir.
 		portsPerBatch = req.Workers / len(m.targets)
 		if portsPerBatch < 1 {
 			portsPerBatch = 1
@@ -504,7 +504,13 @@ func (m *Manager) run(ctx context.Context, req ScanRequest, targets []Target) {
 		}
 	}
 	if req.Mode == "fast" && len(deferredRetries) > 0 {
-		_ = dispatch(deferredRetries, true, nil, nil)
+		verificationDeadline := time.Now().Add(90 * time.Second)
+		for first := 0; first < len(deferredRetries) && time.Now().Before(verificationDeadline); first += 4000 {
+			last := minInt(len(deferredRetries), first+4000)
+			if !dispatch(deferredRetries[first:last], true, nil, nil) {
+				break
+			}
+		}
 	}
 }
 func (m *Manager) finishScan() {

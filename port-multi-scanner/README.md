@@ -1,6 +1,6 @@
 # Port Multi Scanner
 
-`ip_feed.json` icindeki IP adresleri TCP portlariyla taranir. Is sirasi her zaman **port -> tum IP'ler** seklindedir.
+`ip_feed.json` icindeki IP adresleri TCP portlariyla taranir. Is sirasi her zaman **port -> Tüm IP'ler** seklindedir.
 
 ## Calistirma
 
@@ -34,14 +34,14 @@ Her kurulumun bir `SCANNER_NAME` degeri vardir. Bu deger ekranda, acik-port sonu
 - Yerel kurulum: `SCANNER_NAME=Turkiye`
 - DigitalOcean kurulumu: `SCANNER_NAME=Yurtdisi - Frankfurt` (veya secilen bolge)
 
-DigitalOcean icin Docker imaji hazirdir:
+DigitalOcean icin Docker imaji Hazırdir:
 
 ```powershell
 docker build -t port-multi-scanner .
 docker run -d --name port-scanner -p 8080:8080 --env-file .env -e SCANNER_NAME="Yurtdisi - Frankfurt" port-multi-scanner
 ```
 
-DigitalOcean sunucusu da ayni `ip_feed.json` dosyasina sahip olmali. Iki konum ayni araligi bagimsiz tarar; sonuc tablosundaki Kaynak sutunu, portun hangi konumdan goruldugunu ayirt eder.
+DigitalOcean sunucusu da ayni `ip_feed.json` dosyasina sahip olmali. Iki konum ayni aralığı bagimsiz tarar; sonuc tablosundaki Kaynak sutunu, portun hangi konumdan goruldugunu ayirt eder.
 
 Merkez panelde iki sonucu tek tabloda gostermek icin DigitalOcean sunucusunda `SCANNER_API_TOKEN` tanimlayin. Yerel/merkez kurulumunda ayni degeri `REMOTE_SCANNER_TOKEN` ve DigitalOcean adresini `REMOTE_SCANNER_URL` olarak verin. Merkezden baslatilan veya durdurulan tarama, uzak tarayiciya da iletilir; merkez paneli iki konumun sonucunu birlestirir.
 

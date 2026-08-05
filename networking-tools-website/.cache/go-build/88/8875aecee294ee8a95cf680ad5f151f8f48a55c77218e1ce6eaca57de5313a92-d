@@ -1,9 +1,0 @@
-./crafter.go
-./dnscheck.go
-./packet.go
-./portcheck.go
-./scan.go
-./smtp.go
-./ssl.go
-./subnet.go
-./whois.go
