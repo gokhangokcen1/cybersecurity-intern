@@ -23,3 +23,5 @@
     - AI ile Internet sitesi kategorizasyonu ve sınıflandırması
   - **Port Checkerv2**
     - IP listesindeki cihazların tüm portlarını ya da seçili portlarını tarar, tarama bittiğinde sonucu mail olarak gönderir.
+  - **[Intrusion Detection System v0](https://github.com/gokhangokcen1/intrusion-detection-system)**
+    - Kural bazlı, ağ izleme ve şüpheli paketleri tespit etme, kaynağı engelleme. 
