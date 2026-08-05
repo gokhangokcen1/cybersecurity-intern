@@ -106,7 +106,7 @@ onBeforeUnmount(() => {
 <template>
   <div class="capture-form">
     <div style="display: flex; align-items: center; justify-content: center; gap: 10px;">
-      <img src="/wirehamsilogo.png" alt="WireHamsi Logo" style="width: 90px; height: 90px;" />
+      <!-- <img src="/wirehamsilogo.png" alt="WireHamsi Logo" style="width: 90px; height: 90px;" />-->
       <h1 style="margin-top: 20px;">WireHamsi</h1>
     </div>
 
