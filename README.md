@@ -1,4 +1,6 @@
-# Projeler
+25 iş günü boyunca Arjeta - Xlog Networks'ta yaptığım süreç boyunca geliştirdiğim projeler.
+
+* Projeler
 - **CRUD Student Management System** (GO Fiber + GORM + PostgreSQL + Vue.js)
 - **Networking tools**
   - **Subnet Calculator**
